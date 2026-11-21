@@ -536,7 +536,13 @@ function UserDashboardContent() {
           });
         });
 
-        if (summary.pendingPart) {
+        // CHANGE 12 — a card only exists for quantity that was actually released
+        // to this step. Steps 8/9/10 can submit only what the previous step
+        // finished, so while Step 7 Part 2 is still pending, Step 8 has nothing
+        // to work on and must not show a card that cannot be submitted.
+        // The shown quantity is what is really still receivable right now
+        // (maxSubmittable), never the whole form quantity.
+        if (summary.pendingPart && summary.maxSubmittable > 0) {
           pendingTasks.push({
             entry,
             entryRef,
@@ -547,7 +553,7 @@ function UserDashboardContent() {
             actualDate: null,
             canSubmit: mayEdit && summary.isActionable,
             statusText: summary.parts.length > 0 ? "Partially Submitted" : "Pending",
-            pendingQty: summary.remainingQuantity,
+            pendingQty: summary.maxSubmittable,
             totalQty: summary.totalQuantity,
           });
         }
