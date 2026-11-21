@@ -405,6 +405,12 @@ export function getPendingPart(entry: EntryRecord, stepNum: number): StepPart | 
   const remaining = getRemainingQuantity(entry, stepNum);
   if (remaining <= 0) return null;
 
+  // CHANGE 12 — a pending part only exists when this step can actually submit
+  // something right now. Steps 8/9/10 may only use what the previous step
+  // finished, so while Step 7 Part 2 is still pending Step 8 has no work and
+  // must not surface a phantom "Step 8 Part 2" (in Pending Tasks or History).
+  if (getStepMaxSubmittable(entry, stepNum) <= 0) return null;
+
   const parts = getStepParts(entry, stepNum);
   const submittedMap = getSubmittedItemMap(entry, stepNum);
   const items: StepPartItem[] = getRequirements(entry)
