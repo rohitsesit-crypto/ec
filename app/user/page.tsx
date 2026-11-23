@@ -133,8 +133,6 @@ function UserDashboardContent() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const todayColumnRef = useRef<HTMLDivElement>(null);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
   /**
    * The Entry_ID report is a second full sheet snapshot. Resolving it once per
    * page session (instead of on every poll) removes a duplicate payload from the
@@ -290,20 +288,6 @@ function UserDashboardContent() {
     };
   }, [verified, loadData]);
 
-  useEffect(() => {
-    if (!dashboardData || currentSection !== "pending") return;
-    const timeout = setTimeout(() => {
-      if (todayColumnRef.current && scrollContainerRef.current) {
-        const container = scrollContainerRef.current;
-        const todayEl = todayColumnRef.current;
-        container.scrollTo({ left: todayEl.offsetLeft - container.offsetLeft - 16, behavior: "smooth" });
-      }
-    }, 300);
-    return () => clearTimeout(timeout);
-  }, [dashboardData, currentSection]);
-
-  // The persisted theme is read during the initial render, so this effect only
-  // mirrors the theme onto the document class and never writes state.
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
   }, [darkMode]);
@@ -797,7 +781,7 @@ function UserDashboardContent() {
                   </div>
                 ) : (
                      <div className="scroll-top-wrapper">
-                      <div ref={scrollContainerRef} className="scroll-top-content flex gap-4 overflow-x-auto pt-2 pb-4">
+                      <div className="scroll-top-content flex gap-4 overflow-x-auto pt-2 pb-4">
                         {sortedDateKeys.map((dateKey) => {
                         const tasks = pendingByDate[dateKey];
                         const dateObj = dateKey !== "No Date" ? parseDateString(dateKey) : null;
@@ -807,7 +791,6 @@ function UserDashboardContent() {
                         return (
                           <div
                             key={dateKey}
-                            ref={isTodayDate ? todayColumnRef : undefined}
                             className={cn("min-w-[320px] max-w-[380px] flex-1 rounded-xl overflow-hidden", isTodayDate && "shadow-lg")}
                             style={{ border: isTodayDate ? "1.5px solid #f59e0b" : "1px solid var(--border)", background: "var(--surface)" }}
                           >
