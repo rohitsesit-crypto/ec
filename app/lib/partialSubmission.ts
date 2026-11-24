@@ -290,23 +290,6 @@ export function getSubmittedItemMap(entry: EntryRecord, stepNum: number): Record
   return map;
 }
 
-/** Quantity submitted per item name, counting only parts up to `upToPart` */
-export function getSubmittedItemMapUpTo(
-  entry: EntryRecord,
-  stepNum: number,
-  upToPart: number
-): Record<string, number> {
-  const map: Record<string, number> = {};
-  getStepParts(entry, stepNum).forEach((part) => {
-    if (part.partNumber > upToPart) return;
-    part.items.forEach((item) => {
-      if (!item.itemName) return;
-      map[item.itemName] = (map[item.itemName] || 0) + item.quantity;
-    });
-  });
-  return map;
-}
-
 /**
  * Total quantity submitted so far for a step.
  * CHANGE 6 — when the sheet already says "Completed" but no part records exist
@@ -333,24 +316,12 @@ export function isStepFullySubmitted(entry: EntryRecord, stepNum: number): boole
 }
 
 /**
- * Quantity per item the PREVIOUS step released, cumulatively up to a part.
- * `upToPart` = N means "everything released by parts 1..N of the previous step".
- *
- * CHANGE 13 — PARTS ARE MATCHED ONE TO ONE.
- * Part N of a quantity step is fed only by Part N of the previous step:
- *      Step 7 has 18 parts  ->  Step 8 has 18 parts
- *      Step 8 Part 7 carries exactly the quantity of Step 7 Part 7
- * Step 8 previously received one merged part holding the total of all 18.
- *
+ * Quantity per item that the PREVIOUS step released to this step.
  * Step 7 has no previous quantity step, so it uses the requirement quantity.
- * If the previous step is "Completed" without part records (legacy data), it is
- * treated as having released everything through part 1.
+ * CHANGE 6 — if the previous step is already "Completed" in the sheet but has no
+ * part records (legacy data), it is treated as having released everything.
  */
-export function getReleasedItemMap(
-  entry: EntryRecord,
-  stepNum: number,
-  upToPart?: number
-): Record<string, number> {
+export function getReleasedItemMap(entry: EntryRecord, stepNum: number): Record<string, number> {
   const requirements = getRequirements(entry);
 
   if (!isQuantityInherited(stepNum)) {
@@ -360,39 +331,15 @@ export function getReleasedItemMap(
   }
 
   const prevStep = Number(stepNum) - 1;
-  const prevParts = getStepParts(entry, prevStep);
-  const limit = upToPart === undefined ? Number.MAX_SAFE_INTEGER : Math.max(0, upToPart);
-  const map: Record<string, number> = {};
+  const prevMap = getSubmittedItemMap(entry, prevStep);
+  const prevTotal = Object.keys(prevMap).reduce((sum, k) => sum + (prevMap[k] || 0), 0);
 
-  if (prevParts.length === 0) {
-    if (limit > 0 && isStepCompletedInSheet(entry, prevStep)) {
-      requirements.forEach((r) => { map[r.itemName] = r.quantity; });
-    }
-    return map;
+  if (prevTotal <= 0 && isStepCompletedInSheet(entry, prevStep)) {
+    const fallback: Record<string, number> = {};
+    requirements.forEach((r) => { fallback[r.itemName] = r.quantity; });
+    return fallback;
   }
-
-  prevParts.forEach((part) => {
-    if (part.partNumber > limit) return;
-    part.items.forEach((item) => {
-      if (!item.itemName) return;
-      map[item.itemName] = (map[item.itemName] || 0) + item.quantity;
-    });
-  });
-  return map;
-}
-
-/** How many parts the previous step has released to this step. */
-export function getStepMaxParts(entry: EntryRecord, stepNum: number): number {
-  if (!isQuantityInherited(stepNum)) return Number.MAX_SAFE_INTEGER;
-  const prevStep = Number(stepNum) - 1;
-  const prevParts = getStepParts(entry, prevStep);
-  if (prevParts.length > 0) return prevParts.length;
-  return isStepCompletedInSheet(entry, prevStep) ? 1 : 0;
-}
-
-/** The part number the next submission of this step will create. */
-export function getNextPartNumber(entry: EntryRecord, stepNum: number): number {
-  return getStepParts(entry, stepNum).length + 1;
+  return prevMap;
 }
 
 /** Total quantity released to this step by the previous step */
@@ -402,44 +349,40 @@ export function getStepReleasedQuantity(entry: EntryRecord, stepNum: number): nu
 }
 
 /**
- * Per item progress for the submission form of ONE part.
- * Steps 8/9/10 can never submit more than the PART of the previous step has
- * released, which is what keeps Part N of Step 8 equal to Part N of Step 7.
+ * Per item progress for the submission form.
+ * Steps 8/9/10 can never submit more than the previous step has released,
+ * which is exactly what allows "Step 7 Part 2" and "Step 8 Part 1" to be
+ * submittable at the same time.
  */
-export function getStepItemProgress(
-  entry: EntryRecord,
-  stepNum: number,
-  partNumber?: number
-): StepItemProgress[] {
+export function getStepItemProgress(entry: EntryRecord, stepNum: number): StepItemProgress[] {
   const requirements = getRequirements(entry);
+  const submitted = getSubmittedItemMap(entry, stepNum);
   const completedInSheet = isStepCompletedInSheet(entry, stepNum);
   const inherited = isQuantityInherited(stepNum);
-  const targetPart = partNumber === undefined ? getNextPartNumber(entry, stepNum) : partNumber;
-
-  // Everything this step already submitted in EARLIER parts stays done; the
-  // part being filled may only use the balance its own previous-step part left.
-  const doneBefore = getSubmittedItemMapUpTo(entry, stepNum, targetPart - 1);
-  const allSubmitted = getSubmittedItemMap(entry, stepNum);
-  const released = inherited ? getReleasedItemMap(entry, stepNum, targetPart) : null;
+  const released = inherited ? getReleasedItemMap(entry, stepNum) : null;
 
   return requirements.map((req) => {
-    const doneBeforeThisPart = doneBefore[req.itemName] || 0;
-    let doneAll = allSubmitted[req.itemName] || 0;
+    let done = submitted[req.itemName] || 0;
     // legacy completed row without part records -> treat as fully done
-    if (doneAll === 0 && completedInSheet) doneAll = req.quantity;
-    if (doneBeforeThisPart === 0 && completedInSheet) doneAll = req.quantity;
+    if (done === 0 && completedInSheet) done = req.quantity;
 
-    const remaining = Math.max(0, req.quantity - doneAll);
-    // CHANGE 13 — Part N of this step uses only Part N of the previous step.
+    const remaining = Math.max(0, req.quantity - done);
+    // CHANGE 9 — STEP CHAIN RULE (as confirmed by the user)
+    // A quantity step can only submit what the PREVIOUS step already finished:
+    //      Step 7 Part 1 done (50)  ->  Step 8 Part 1 active for 50
+    //      Step 8 Part 1 done (50)  ->  Step 9 Part 1 active for 50
+    //      Step 9 Part 1 done (50)  ->  Step 10 Part 1 active for 50
+    // Step 8 Part 2 therefore waits until Step 7 Part 2 is submitted.
+    // Step 7 itself is never gated, it always works on the form quantity.
     const availableFromPrevious = released
-      ? Math.max(0, (released[req.itemName] || 0) - doneBeforeThisPart)
+      ? Math.max(0, (released[req.itemName] || 0) - done)
       : remaining;
 
     return {
       itemName: req.itemName,
       unit: req.unit,
       totalQuantity: req.quantity,
-      submitted: doneBeforeThisPart,
+      submitted: done,
       remaining,
       availableFromPrevious,
       maxSubmittable: Math.min(remaining, availableFromPrevious),
@@ -447,20 +390,13 @@ export function getStepItemProgress(
   });
 }
 
-/** Quantity that can be submitted right now, for one part of the step */
-export function getStepMaxSubmittable(
-  entry: EntryRecord,
-  stepNum: number,
-  partNumber?: number
-): number {
+/** Quantity that can be submitted right now for the whole step */
+export function getStepMaxSubmittable(entry: EntryRecord, stepNum: number): number {
   if (isStepCompletedInSheet(entry, stepNum)) return 0;
-  return getStepItemProgress(entry, stepNum, partNumber).reduce(
-    (sum, item) => sum + item.maxSubmittable,
-    0
-  );
+  return getStepItemProgress(entry, stepNum).reduce((sum, item) => sum + item.maxSubmittable, 0);
 }
 
-/** The derived pending part representing ONE part that can be submitted now */
+/** The derived pending part representing the remaining quantity */
 export function getPendingPart(entry: EntryRecord, stepNum: number): StepPart | null {
   if (isStepCompletedInSheet(entry, stepNum)) return null;
 
@@ -469,46 +405,27 @@ export function getPendingPart(entry: EntryRecord, stepNum: number): StepPart | 
   const remaining = getRemainingQuantity(entry, stepNum);
   if (remaining <= 0) return null;
 
-  const parts = getStepParts(entry, stepNum);
-  const partNumber = parts.length + 1;
-
-  // CHANGE 13 — a step inherits exactly as many parts as the previous step has.
-  // Step 7 with 18 parts therefore gives Step 8 exactly 18 parts, never a
-  // single merged part holding all 18.
-  if (partNumber > getStepMaxParts(entry, stepNum)) return null;
-
   // CHANGE 12 — a pending part only exists when this step can actually submit
-  // something right now. Steps 8/9/10 may only use what the matching part of the
-  // previous step finished, so while Step 7 Part 2 is still pending Step 8 has
-  // no work and must not surface a phantom "Step 8 Part 2".
-  const available = getStepMaxSubmittable(entry, stepNum, partNumber);
-  if (available <= 0) return null;
+  // something right now. Steps 8/9/10 may only use what the previous step
+  // finished, so while Step 7 Part 2 is still pending Step 8 has no work and
+  // must not surface a phantom "Step 8 Part 2" (in Pending Tasks or History).
+  if (getStepMaxSubmittable(entry, stepNum) <= 0) return null;
 
-  const doneBefore = getSubmittedItemMapUpTo(entry, stepNum, partNumber - 1);
-  const released = isQuantityInherited(stepNum)
-    ? getReleasedItemMap(entry, stepNum, partNumber)
-    : null;
-
+  const parts = getStepParts(entry, stepNum);
+  const submittedMap = getSubmittedItemMap(entry, stepNum);
   const items: StepPartItem[] = getRequirements(entry)
-    .map((req) => {
-      const done = doneBefore[req.itemName] || 0;
-      const room = Math.max(0, req.quantity - done);
-      const fromPrevious = released
-        ? Math.max(0, (released[req.itemName] || 0) - done)
-        : room;
-      return {
-        itemName: req.itemName,
-        quantity: Math.min(room, fromPrevious),
-        totalQuantity: req.quantity,
-      };
-    })
+    .map((req) => ({
+      itemName: req.itemName,
+      quantity: Math.max(0, req.quantity - (submittedMap[req.itemName] || 0)),
+      totalQuantity: req.quantity,
+    }))
     .filter((item) => item.quantity > 0);
 
   return {
     stepNumber: Number(stepNum),
-    partNumber,
+    partNumber: parts.length + 1,
     submittedQuantity: 0,
-    remainingQuantity: available,
+    remainingQuantity: remaining,
     totalQuantity: total,
     status: 'Pending',
     submittedAt: '',
@@ -558,10 +475,7 @@ export function getStepPartSummary(entry: EntryRecord, stepNum: number): StepPar
   const partsQuantity = parts.reduce((sum, p) => sum + p.submittedQuantity, 0);
   const submittedQuantity = partsQuantity > 0 ? partsQuantity : (completedInSheet ? total : 0);
   const pendingPart = getPendingPart(entry, stepNum);
-  const nextPartNumber = getNextPartNumber(entry, stepNum);
-  // CHANGE 13 — the quantity on offer belongs to the NEXT part only, never to
-  // the whole step, so Part N of Step 8 mirrors Part N of Step 7 exactly.
-  const maxSubmittable = getStepMaxSubmittable(entry, stepNum, nextPartNumber);
+  const maxSubmittable = getStepMaxSubmittable(entry, stepNum);
   // CHANGE 7 — unlocked as soon as the previous step released quantity, so
   // "Step 7 Part 2" and "Step 8 Part 1" stay submittable at the same time.
   const unlocked = isStepUnlocked(entry, stepNum);
@@ -577,7 +491,7 @@ export function getStepPartSummary(entry: EntryRecord, stepNum: number): StepPar
     overallStatus: getOverallStepStatus(entry, stepNum),
     isFullySubmitted: completedInSheet || (total > 0 && submittedQuantity >= total),
     hasPartialSubmission: !completedInSheet && parts.length > 0 && submittedQuantity < total,
-    nextPartNumber,
+    nextPartNumber: parts.length + 1,
     maxSubmittable,
     // CHANGE 6 — a step completed in the sheet is never actionable again
     isActionable: unlocked && !completedInSheet && maxSubmittable > 0,
@@ -681,7 +595,7 @@ export function buildPartialPayload(options: {
     totalQuantity: total,
     remainingQuantity: remainingAfter,
     isPartial: remainingAfter > 0,
-    /** true => every unit of the whole step is covered, so the step is Completed */
+    /** true => the full form quantity is covered, so the step is Completed */
     isFullyCovered: remainingAfter <= 0,
     items: cleanItems,
     reference,
